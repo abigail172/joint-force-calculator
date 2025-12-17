@@ -1,73 +1,49 @@
 """
-Core biomechanics calculations for joint force analysis.
+Biomechanics Toolkit - Calculate forces on joints during movement
 
-This module provides functions and classes for calculating forces,
-moments, and other biomechanical quantities during human movement.
+This is a collection of functions I built to understand how forces act on 
+human joints. Pretty useful for understanding gaits, movememnt, 
+or just figuring out why your knee starts to hurt when you run!
+
 """
 
 import numpy as np
-from typing import Tuple, List, Optional
-import warnings
+from typing import Optional
 
 
 class Segment:
     """
-    Represents a body segment with mass and geometric properties.
+    Represents a body segment (like your thigh or forearm).
     
-    Attributes
-    ----------
-    name : str
-        Name of the segment (e.g., 'thigh', 'shank')
-    mass : float
-        Mass in kilograms
-    length : float
-        Length in meters
-    com_ratio : float
-        Ratio of COM position from proximal end (0-1)
-    radius_of_gyration_ratio : float
-        Radius of gyration as ratio of segment length
+    This keeps track of the physical properties we need for calculations:
+    mass, length, where the center of mass is, etc.
     """
     
-    def __init__(self, name: str, mass: float, length: float, 
-                 com_ratio: float = 0.5, rg_ratio: float = 0.3):
+    def __init__(self, name, mass, length, com_ratio=0.5, rg_ratio=0.3):
         self.name = name
         self.mass = mass
         self.length = length
         self.com_ratio = com_ratio
         self.rg_ratio = rg_ratio
-        
+    
     @property
-    def moment_of_inertia(self) -> float:
-        """Calculate moment of inertia about COM (kg⋅m²)"""
+    def moment_of_inertia(self):
+        """How hard it is to rotate this segment (kg⋅m²)"""
         radius_of_gyration = self.length * self.rg_ratio
         return self.mass * radius_of_gyration ** 2
     
-    def com_position(self, proximal_pos: np.ndarray, 
-                    distal_pos: np.ndarray) -> np.ndarray:
+    def com_position(self, proximal_pos, distal_pos):
         """
-        Calculate center of mass position.
-        
-        Parameters
-        ----------
-        proximal_pos : np.ndarray
-            Position of proximal joint [x, y, z]
-        distal_pos : np.ndarray
-            Position of distal joint [x, y, z]
-        
-        Returns
-        -------
-        np.ndarray
-            COM position [x, y, z]
+        Figure out where the center of mass is between two joint positions.
         """
         return proximal_pos + self.com_ratio * (distal_pos - proximal_pos)
     
     def __repr__(self):
-        return (f"Segment(name='{self.name}', mass={self.mass:.2f} kg, "
-                f"length={self.length:.3f} m)")
+        return f"{self.name}: {self.mass:.2f} kg, {self.length:.3f} m"
 
 
-# Anthropometric data (Winter, 2009)
-SEGMENT_PARAMETERS = {
+# Winter, 2009 - Biomechanics and Motor Control of Human Movement
+BODY_SEGMENT_DATA = {
     'head': {'mass_ratio': 0.081, 'com_ratio': 0.5, 'rg_ratio': 0.303},
     'trunk': {'mass_ratio': 0.497, 'com_ratio': 0.5, 'rg_ratio': 0.496},
     'upper_arm': {'mass_ratio': 0.028, 'com_ratio': 0.436, 'rg_ratio': 0.322},
@@ -79,224 +55,204 @@ SEGMENT_PARAMETERS = {
 }
 
 
-def create_segment_from_body_mass(segment_name: str, body_mass: float, 
-                                 length: float) -> Segment:
+def create_segment(segment_name, body_mass, length):
     """
-    Create a segment using anthropometric ratios.
+    Quick way to create a segment using typical body proportions.
     
-    Parameters
-    ----------
-    segment_name : str
-        Name of segment (must be in SEGMENT_PARAMETERS)
-    body_mass : float
-        Total body mass in kg
-    length : float
-        Segment length in meters
-    
-    Returns
-    -------
-    Segment
-        Configured segment object
+    For example, a thigh is typically 10% of body mass, so if you
+    weigh 70kg, your thigh is about 7kg.
     """
-    if segment_name not in SEGMENT_PARAMETERS:
-        raise ValueError(f"Unknown segment: {segment_name}")
+    if segment_name not in BODY_SEGMENT_DATA:
+        available = ', '.join(BODY_SEGMENT_DATA.keys())
+        raise ValueError(f"Don't know about '{segment_name}'. Try one of: {available}")
     
-    params = SEGMENT_PARAMETERS[segment_name]
-    mass = body_mass * params['mass_ratio']
+    data = BODY_SEGMENT_DATA[segment_name]
+    segment_mass = body_mass * data['mass_ratio']
     
     return Segment(
         name=segment_name,
-        mass=mass,
+        mass=segment_mass,
         length=length,
-        com_ratio=params['com_ratio'],
-        rg_ratio=params['rg_ratio']
+        com_ratio=data['com_ratio'],
+        rg_ratio=data['rg_ratio']
     )
-
-
-def calculate_joint_reaction_force(
-    segment: Segment,
-    proximal_pos: np.ndarray,
-    distal_pos: np.ndarray,
-    distal_force: np.ndarray,
-    acceleration: Optional[np.ndarray] = None,
-    gravity: float = 9.81
-) -> np.ndarray:
+def calculate_joint_force(segment, prox_pos, dist_pos, dist_force, 
+                         acceleration=None, gravity=9.81):
     """
-    Calculate joint reaction force using inverse dynamics.
+    Calculate the reaction force at a joint using inverse dynamics.
     
-    This implements the equation:
-    F_prox = F_dist + m*a_COM - m*g
+    This is basically Newton's 2nd law (F = ma) applied to body segments.
+    We work backwards from known forces (like ground reaction force) to
+    figure out what's happening at the joints.
     
-    Parameters
-    ----------
-    segment : Segment
-        Body segment object
-    proximal_pos : np.ndarray
-        Proximal joint position [x, y] or [x, y, z]
-    distal_pos : np.ndarray
-        Distal joint position [x, y] or [x, y, z]
-    distal_force : np.ndarray
-        Force at distal end [Fx, Fy] or [Fx, Fy, Fz] in Newtons
-    acceleration : np.ndarray, optional
-        COM acceleration [ax, ay] or [ax, ay, az] in m/s²
-        If None, assumes static equilibrium
-    gravity : float, optional
-        Gravitational acceleration (default: 9.81 m/s²)
+    segment: the Segment object we're analyzing
+    prox_pos: position of proximal joint [x, y] (closer to body center)
+    dist_pos: position of distal joint [x, y] (farther from body center)  
+    dist_force: force acting at the distal end [Fx, Fy] in Newtons
+    acceleration: how fast the segment's center of mass is accelerating [ax, ay]
+                  (if None, assumes static/slow movement)
+    gravity: acceleration due to gravity (9.81 m/s² on Earth)
     
-    Returns
-    -------
-    np.ndarray
-        Proximal joint reaction force in Newtons
+    Returns: force at the proximal joint [Fx, Fy] in Newtons
+    
+    Example:
+        If you know the ground pushes up on your foot with 500N, you can
+        calculate how much force your knee experiences.
     """
-    # Handle dimensions
-    dims = len(proximal_pos)
+    dims = len(prox_pos)
     if acceleration is None:
         acceleration = np.zeros(dims)
     
-    # Gravitational force (always acts downward)
-    gravity_force = np.zeros(dims)
-    gravity_force[-1] = -segment.mass * gravity
+    # Weight force (always pulls downward)
+    weight = np.zeros(dims)
+    weight[-1] = -segment.mass * gravity  # negative because it's downward
     
-    # Inertial force (ma)
-    inertial_force = segment.mass * acceleration
+    # Inertial force from acceleration (F = ma)
+    inertial = segment.mass * acceleration
     
-    # Sum of forces (Newton's 2nd law)
-    proximal_force = distal_force + gravity_force - inertial_force
+    # Balance the forces (what goes in must equal what goes out)
+    proximal_force = dist_force + weight - inertial
     
     return proximal_force
 
 
-def calculate_joint_moment(
-    force: np.ndarray,
-    force_position: np.ndarray,
-    joint_position: np.ndarray,
-    segment: Optional[Segment] = None,
-    angular_acceleration: float = 0.0
-) -> float:
+def calculate_moment(force, force_pos, joint_pos, segment=None, 
+                    angular_accel=0.0):
     """
-    Calculate moment (torque) about a joint.
+    Calculate torque (moment) about a joint.
     
-    M = r × F + I*α
+    This tells you how much rotational force is being applied.
+    Think of it like using a wrench - the force times the distance
+    from the bolt gives you the turning power.
     
-    Parameters
-    ----------
-    force : np.ndarray
-        Force vector [Fx, Fy] in Newtons
-    force_position : np.ndarray
-        Position where force acts [x, y]
-    joint_position : np.ndarray
-        Joint center position [x, y]
-    segment : Segment, optional
-        If provided, includes inertial moment (I*α)
-    angular_acceleration : float, optional
-        Angular acceleration in rad/s² (default: 0)
+    force: the force vector [Fx, Fy] in Newtons
+    force_pos: where the force is applied [x, y]
+    joint_pos: center of the joint [x, y]
+    segment: if provided, includes rotational inertia effects
+    angular_accel: angular acceleration in rad/s²
     
-    Returns
-    -------
-    float
-        Joint moment in N⋅m (positive = counterclockwise)
+    Returns: moment in N⋅m (positive = counterclockwise)
     """
-    # Moment arm
-    r = force_position - joint_position
+    # Distance from joint to where force acts
+    r = force_pos - joint_pos
     
-    # 2D cross product: r × F = rx*Fy - ry*Fx
+    # Cross product in 2D: this is the "perpendicular force times distance" calculation
     moment = r[0] * force[1] - r[1] * force[0]
     
-    # Add inertial moment if segment provided
-    if segment is not None and angular_acceleration != 0.0:
-        inertial_moment = segment.moment_of_inertia * angular_acceleration
-        moment += inertial_moment
+    # If the segment is rotating, add the inertial component
+    if segment and angular_accel != 0.0:
+        moment += segment.moment_of_inertia * angular_accel
     
     return moment
 
 
-def calculate_muscle_force(
-    required_moment: float,
-    moment_arm: float,
-    pennation_angle: float = 0.0,
-    efficiency: float = 1.0
-) -> float:
+def calculate_muscle_force(moment_needed, moment_arm, pennation_angle=0.0):
     """
-    Calculate muscle force needed to produce a given joint moment.
+    Figure out how much force a muscle needs to produce.
     
-    F_muscle = M_joint / (d * cos(θ) * η)
+    Muscles create torque at joints. If you know how much torque you need
+    and how far the muscle attaches from the joint, you can calculate the
+    required muscle force.
     
-    Parameters
-    ----------
-    required_moment : float
-        Required joint moment in N⋅m
-    moment_arm : float
-        Muscle moment arm in meters
-    pennation_angle : float, optional
-        Muscle pennation angle in degrees (default: 0)
-    efficiency : float, optional
-        Mechanical efficiency 0-1 (default: 1.0)
+    moment_needed: the torque required at the joint (N⋅m)
+    moment_arm: distance from joint to muscle attachment (meters)
+    pennation_angle: angle of muscle fibers relative to tendon (degrees)
+                     (most muscles have fibers at an angle, not straight)
     
-    Returns
-    -------
-    float
-        Required muscle force in Newtons
+    Returns: required muscle force in Newtons
+    
+    Example:
+        To hold a 10kg weight with your elbow at 90°, your biceps might need
+        to produce 300N of force depending on the moment arm.
     """
     if moment_arm <= 0:
-        raise ValueError("Moment arm must be positive")
-    if not 0 < efficiency <= 1:
-        raise ValueError("Efficiency must be between 0 and 1")
+        raise ValueError("Moment arm must be positive - check your measurements!")
     
-    theta_rad = np.radians(pennation_angle)
-    force = required_moment / (moment_arm * np.cos(theta_rad) * efficiency)
+    # Account for pennation angle (only component along tendon counts)
+    angle_rad = np.radians(pennation_angle)
+    force = moment_needed / (moment_arm * np.cos(angle_rad))
     
     return force
 
 
-def calculate_angle_2d(point1: np.ndarray, vertex: np.ndarray, 
-                      point3: np.ndarray) -> float:
+def calculate_angle(point1, vertex, point3):
     """
-    Calculate angle formed by three points in 2D.
+    Calculate the angle formed by three points.
     
-    Parameters
-    ----------
-    point1 : np.ndarray
-        First point [x, y]
-    vertex : np.ndarray
-        Vertex point (where angle is measured) [x, y]
-    point3 : np.ndarray
-        Third point [x, y]
+    This is useful for measuring joint angles from motion capture data.
     
-    Returns
-    -------
-    float
-        Angle in degrees (0-180)
+    point1: first point [x, y] (like hip position)
+    vertex: middle point [x, y] (like knee - this is where angle is measured)
+    point3: third point [x, y] (like ankle position)
+    
+    Returns: angle in degrees (0-180)
+    
+    Example:
+        To measure knee angle, pass in hip, knee, and ankle positions.
+        180° = fully straight, smaller angles = more bent.
     """
+    # Create vectors from vertex to the other two points
     v1 = point1 - vertex
     v2 = point3 - vertex
     
+    # Use dot product to find angle between vectors
     cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+    
+    # Handle floating point errors (cos must be between -1 and 1)
     cos_angle = np.clip(cos_angle, -1.0, 1.0)
     
     angle_rad = np.arccos(cos_angle)
-    angle_deg = np.degrees(angle_rad)
-    
-    return angle_deg
+    return np.degrees(angle_rad)
 
 
-def joint_power(moment: float, angular_velocity: float) -> float:
+def calculate_power(moment, angular_velocity):
     """
     Calculate mechanical power at a joint.
     
-    P = M * ω
+    Power = Moment × Angular Velocity
     
-    Parameters
-    ----------
-    moment : float
-        Joint moment in N⋅m
-    angular_velocity : float
-        Angular velocity in rad/s
+    moment: joint moment in N⋅m
+    angular_velocity: how fast the joint is rotating in rad/s
     
-    Returns
-    -------
-    float
-        Mechanical power in Watts
-        Positive = concentric (generating), Negative = eccentric (absorbing)
+    Returns: power in Watts
+    
+    Positive power = muscle is generating energy (concentric contraction)
+    Negative power = muscle is absorbing energy (eccentric contraction)
+    
+    Example:
+        When you jump, your leg joints generate power to accelerate you upward.
+        When you land, they absorb power to slow you down.
     """
     return moment * angular_velocity
 
+
+# Some quick helper functions
+
+def body_weight_force(mass_kg):
+    """Convert body mass to weight force in Newtons"""
+    return mass_kg * 9.81
+
+
+def newtons_to_body_weights(force_n, body_mass_kg):
+    """Express a force as multiples of body weight (BW)"""
+    return force_n / body_weight_force(body_mass_kg)
+
+
+def estimate_segment_length(height_m, segment_name):
+    """
+    Rough estimate of segment length based on total height.
+    These are typical proportions - real people vary!
+    """
+    length_ratios = {
+        'thigh': 0.245,
+        'shank': 0.246,
+        'foot': 0.152,
+        'upper_arm': 0.186,
+        'forearm': 0.146,
+        'trunk': 0.288,
+    }
+    
+    if segment_name not in length_ratios:
+        raise ValueError(f"Don't have length estimate for '{segment_name}'")
+    
+    return height_m * length_ratios[segment_name]
