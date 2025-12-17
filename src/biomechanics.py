@@ -1,6 +1,4 @@
 """
-Biomechanics Toolkit - Calculate forces on joints during movement
-
 This is a collection of functions I built to understand how forces act on 
 human joints. Pretty useful for understanding gaits, movememnt, 
 or just figuring out why your knee starts to hurt when you run!
