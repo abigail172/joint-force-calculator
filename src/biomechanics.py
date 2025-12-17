@@ -148,9 +148,9 @@ def calculate_muscle_force(moment_needed, moment_arm, pennation_angle=0.0):
     """
     Figure out how much force a muscle needs to produce.
     
-    Muscles create torque at joints. If you know how much torque you need
-    and how far the muscle attaches from the joint, you can calculate the
-    required muscle force.
+    Muscles create torque at joints. If you calculate the required muscle force.
+    All you need to know is how much torque you need
+    and how far the muscle attaches from the joint.
     
     moment_needed: the torque required at the joint (N⋅m)
     moment_arm: distance from joint to muscle attachment (meters)
@@ -164,7 +164,7 @@ def calculate_muscle_force(moment_needed, moment_arm, pennation_angle=0.0):
         to produce 300N of force depending on the moment arm.
     """
     if moment_arm <= 0:
-        raise ValueError("Moment arm must be positive - check your measurements!")
+        raise ValueError("Moment arm must be positive so check your measurements!")
     
     # Account for pennation angle (only component along tendon counts)
     angle_rad = np.radians(pennation_angle)
